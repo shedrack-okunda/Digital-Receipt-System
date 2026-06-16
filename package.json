@@ -1,0 +1,13 @@
+{
+	"name": "receipt-platform",
+	"private": true,
+	"packageManager": "pnpm@10.0.0",
+	"scripts": {
+		"dev:api": "pnpm --filter api start:dev",
+		"dev:receipt": "pnpm --filter receipt dev",
+		"build:api": "pnpm --filter api build",
+		"build:receipt": "pnpm --filter receipt build",
+		"start:api": "pnpm --filter api start",
+		"start:receipt": "pnpm --filter receipt start"
+	}
+}

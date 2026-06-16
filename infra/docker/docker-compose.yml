@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: receipt_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: my_receipt_user
+      POSTGRES_PASSWORD: DigitalReceipt1
+      POSTGRES_DB: receipt_db
+    ports:
+      - '5435:5432' # Maps host port 5435 to container port 5432 to avoid local system conflicts
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - receipt_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: receipt_redis
+    restart: always
+    command: redis-server --appendonly yes # Ensures data isn't instantly wiped if container restarts
+    ports:
+      - '6379:6379'
+    volumes:
+      - redisdata:/data
+    networks:
+      - receipt_net
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  receipt_net:
+    driver: bridge
