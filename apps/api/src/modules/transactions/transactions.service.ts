@@ -11,10 +11,20 @@ export class TransactionsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async createTransaction(storeId: string, dto: CreateTransactionDto) {
-    // 1. Run defensive mathematical parsing checks on the incoming payload totals
-    this.validatePayloadMathematics(dto);
+    // 1. Convert client decimals to safe database integers (cents) for processing
+    const centsSubtotal = Math.round(dto.subtotal * 100);
+    const centsTax = Math.round(dto.tax * 100);
+    const centsTotal = Math.round(dto.total * 100);
 
-    // 2. Check if this store has already uploaded this identical POS transaction reference
+    // 2. Validate mathematics using the safe integer figures
+    this.validatePayloadMathematics(
+      centsSubtotal,
+      centsTax,
+      centsTotal,
+      dto.items,
+    );
+
+    // 3. Enforce unique POS reference checks per store boundary
     const existingTransaction = await this.prisma.transaction.findUnique({
       where: {
         storeId_reference: {
@@ -30,22 +40,26 @@ export class TransactionsService {
       );
     }
 
-    // 3. Persist transaction data and items together atomically
-    return this.prisma.transaction.create({
+    // 4. Milestone A: Resolve or Dynamically Provision the Customer Profile
+    const customer = await this.resolveOrCreateCustomer(dto.customer);
+
+    // 5. Persist everything atomically to the database tier
+    const record = await this.prisma.transaction.create({
       data: {
         storeId,
+        customerId: customer.id, // Successfully bound from ground up!
         reference: dto.reference,
-        subtotal: dto.subtotal,
-        tax: dto.tax,
-        total: dto.total,
+        subtotal: centsSubtotal,
+        tax: centsTax,
+        total: centsTotal,
         currency: dto.currency ?? 'KES',
         status: 'pending',
         items: {
           create: dto.items.map((item) => ({
             name: item.name,
             quantity: item.quantity,
-            unitPrice: item.unitPrice,
-            totalPrice: item.unitPrice * item.quantity, // Integrity locked
+            unitPrice: Math.round(item.unitPrice * 100),
+            totalPrice: Math.round(item.unitPrice * 100) * item.quantity,
           })),
         },
       },
@@ -53,39 +67,99 @@ export class TransactionsService {
         items: true,
       },
     });
+
+    // 6. Ingestion Response Transformer: Format response into clean enterprise output
+    return this.transformToEnterpriseResponse(record, customer);
   }
 
   /**
-   * Defensive Parsing Engine: Verifies that item arrays dynamically match
-   * the declared financial parameters to protect system accounting integrity.
+   * Looks up an existing customer by unique identifiers or seeds them on the fly.
    */
-  private validatePayloadMathematics(dto: CreateTransactionDto): void {
+  private async resolveOrCreateCustomer(customerDto: any) {
+    if (!customerDto.phone) {
+      throw new BadRequestException(
+        'Customer phone number is required to map transaction identity.',
+      );
+    }
+
+    // Attempt lookup by phone index
+    let customer = await this.prisma.customer.findUnique({
+      where: { phone: customerDto.phone },
+    });
+
+    // If not found, create a new customer record from the ground up
+    if (!customer) {
+      customer = await this.prisma.customer.create({
+        data: {
+          phone: customerDto.phone,
+          email: customerDto.email || null,
+        },
+      });
+    }
+
+    return customer;
+  }
+
+  /**
+   * Internal Parsing Engine checking system calculations using sanitized integer numbers.
+   */
+  private validatePayloadMathematics(
+    subtotal: number,
+    tax: number,
+    total: number,
+    items: any[],
+  ): void {
     let calculatedSubtotal = 0;
 
-    // Sum up the real price of every single line item
-    for (const item of dto.items) {
-      if (item.quantity <= 0 || item.unitPrice <= 0) {
-        throw new BadRequestException(
-          `Invalid item properties for "${item.name}". Quantities and prices must be greater than 0.`,
-        );
+    for (const item of items) {
+      const itemUnitPriceCents = Math.round(item.unitPrice * 100);
+      if (item.quantity <= 0 || itemUnitPriceCents <= 0) {
+        throw new BadRequestException(`Invalid properties for "${item.name}".`);
       }
-
-      calculatedSubtotal += item.unitPrice * item.quantity;
+      calculatedSubtotal += itemUnitPriceCents * item.quantity;
     }
 
-    // Check 1: Verify calculated line item sums match the declared subtotal
-    if (calculatedSubtotal !== dto.subtotal) {
+    if (calculatedSubtotal !== subtotal) {
       throw new BadRequestException(
-        `Financial mismatch: The sum of line items (${calculatedSubtotal} cents) does not equal the payload subtotal (${dto.subtotal} cents).`,
+        `Financial mismatch: Line items sum up to ${calculatedSubtotal / 100}, but payload subtotal says ${subtotal / 100}.`,
       );
     }
 
-    // Check 2: Verify that subtotal + tax adds up perfectly to the declared total
-    const expectedTotal = dto.subtotal + dto.tax;
-    if (expectedTotal !== dto.total) {
+    if (subtotal + tax !== total) {
       throw new BadRequestException(
-        `Financial mismatch: Subtotal (${dto.subtotal} cents) + Tax (${dto.tax} cents) must equal Total (${dto.total} cents). Received total: ${dto.total} cents.`,
+        `Financial mismatch: Subtotal (${subtotal / 100}) + Tax (${tax / 100}) must equal Total (${total / 100}).`,
       );
     }
+  }
+
+  /**
+   * Enterprise Response Transformer
+   * Converts database cents back to clean decimals and hides internal database IDs.
+   */
+  private transformToEnterpriseResponse(
+    transactionRecord: any,
+    customerRecord: any,
+  ) {
+    return {
+      transactionId: transactionRecord.reference,
+      status: transactionRecord.status,
+      currency: transactionRecord.currency,
+      financials: {
+        subtotal: parseFloat((transactionRecord.subtotal / 100).toFixed(2)),
+        tax: parseFloat((transactionRecord.tax / 100).toFixed(2)),
+        total: parseFloat((transactionRecord.total / 100).toFixed(2)),
+      },
+      customer: {
+        customerRef: customerRecord.phone,
+        email: customerRecord.email,
+      },
+      lineItems: transactionRecord.items.map((item: any) => ({
+        description: item.name,
+        quantity: item.quantity,
+        unitPrice: parseFloat((item.unitPrice / 100).toFixed(2)),
+        totalPrice: parseFloat((item.totalPrice / 100).toFixed(2)),
+      })),
+      timestamp: transactionRecord.createdAt,
+    };
   }
 }
