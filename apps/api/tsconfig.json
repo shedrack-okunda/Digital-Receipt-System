@@ -21,8 +21,8 @@
     "noImplicitAny": false,
     "strictBindCallApply": false,
     "noFallthroughCasesInSwitch": false,
-"paths": {
-  "@generated/*": ["generated/*"]
-}
+    "paths": {
+      "@generated/*": ["generated/*"]
+    }
   }
 }
