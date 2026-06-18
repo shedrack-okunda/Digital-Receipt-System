@@ -47,7 +47,7 @@ export class TransactionsService {
     const record = await this.prisma.transaction.create({
       data: {
         storeId,
-        customerId: customer.id, // Successfully bound from ground up!
+        customerId: customer.id,
         reference: dto.reference,
         subtotal: centsSubtotal,
         tax: centsTax,
@@ -149,10 +149,12 @@ export class TransactionsService {
         tax: parseFloat((transactionRecord.tax / 100).toFixed(2)),
         total: parseFloat((transactionRecord.total / 100).toFixed(2)),
       },
-      customer: {
-        customerRef: customerRecord.phone,
-        email: customerRecord.email,
-      },
+      customer: customerRecord
+        ? {
+            customerRef: customerRecord.phone,
+            email: customerRecord.email,
+          }
+        : null,
       lineItems: transactionRecord.items.map((item: any) => ({
         description: item.name,
         quantity: item.quantity,
@@ -161,5 +163,43 @@ export class TransactionsService {
       })),
       timestamp: transactionRecord.createdAt,
     };
+  }
+
+  /**
+   * Retrieves all historical transactions belonging strictly to the executing store.
+   */
+  async findAllStoreTransactions(storeId: string) {
+    const records = await this.prisma.transaction.findMany({
+      where: { storeId },
+      include: { items: true, customer: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return records.map((record) =>
+      this.transformToEnterpriseResponse(record, record.customer),
+    );
+  }
+
+  /**
+   * Obtains a singular transaction record by reference ID, scoped to the calling store.
+   */
+  async findStoreTransactionByReference(storeId: string, reference: string) {
+    const record = await this.prisma.transaction.findUnique({
+      where: {
+        storeId_reference: {
+          storeId,
+          reference,
+        },
+      },
+      include: { items: true, customer: true },
+    });
+
+    if (!record) {
+      throw new BadRequestException(
+        `Transaction receipt '${reference}' was not found for this account.`,
+      );
+    }
+
+    return this.transformToEnterpriseResponse(record, record.customer);
   }
 }
